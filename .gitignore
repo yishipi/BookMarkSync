@@ -1,0 +1,17 @@
+/node_modules/
+/work/
+/dist/
+*.log
+
+# 本地配置和私钥
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+
+# 同步目录中的用户书签、版本记录和备份
+BookMarkSync.workspace.json
+replica-*.json
+backup-*.json

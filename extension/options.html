@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BookMarkSync · 本地书签同步</title>
+  <link rel="stylesheet" href="options.css">
+  <script type="module" src="options.js"></script>
+</head>
+<body>
+  <main>
+    <header><div class="logo" aria-hidden="true">B<span>⇄</span></div><div><p class="eyebrow">CHROME + EDGE · LOCAL</p><h1>让两端收藏保持一致</h1><p class="intro">选择同一个本地目录，之后自动合并你的日常增删改。</p></div></header>
+    <section class="card status-card" aria-labelledby="status-title">
+      <div class="status-heading"><span class="dot" id="status-dot"></span><h2 id="status-title">正在读取状态…</h2><span class="tag" id="browser-label"></span></div>
+      <p id="status-message" role="status" aria-live="polite"></p>
+      <div class="metrics"><div><strong id="bookmark-count">—</strong><span>书签</span></div><div><strong id="folder-count">—</strong><span>文件夹</span></div><div><strong id="last-sync">—</strong><span>最近同步</span></div></div>
+      <div class="actions"><button id="enable" class="primary" hidden>开始自动同步</button><button id="sync" class="primary" hidden>立即同步</button><button id="pause" hidden>暂停自动同步</button><button id="grant" class="primary" hidden>恢复目录授权</button></div>
+      <p class="note" id="plan" hidden></p>
+    </section>
+    <section class="card" aria-labelledby="directory-title">
+      <div class="section-heading"><h2 id="directory-title">共享目录</h2><span class="tag subtle">数据只在本地交换</span></div>
+      <p class="description">在 Chrome 和 Edge 中分别选择同一个文件夹。目录不限于下载文件夹；请选择一个普通本地目录。</p>
+      <div class="directory"><span aria-hidden="true">▤</span><div><strong id="directory-name">尚未连接目录</strong><small id="workspace-name">首次连接后会显示合并预览，不会立即修改书签。</small></div><button id="choose">选择目录</button></div>
+      <div class="settings"><label>本端名称<input id="label" maxlength="80" autocomplete="off" placeholder="Chrome 或 Edge"></label><label>后台检查间隔<select id="interval"><option value="30">30 秒</option><option value="60">1 分钟</option><option value="120">2 分钟</option><option value="300">5 分钟</option></select></label><button id="save" hidden>保存设置</button></div>
+      <p class="note">首次连接或更换到其他目录会先显示预览，点击“开始自动同步”后才应用。取消选择或新目录校验失败时，保留原连接。若出现“每次访问时都允许”，可选择该项；授权仍可能失效，需要恢复时会在扩展图标上提醒。</p>
+    </section>
+    <section class="card" aria-labelledby="peers-title"><h2 id="peers-title">已发现的其他端</h2><div id="peers" class="list"><p class="description">等待另一浏览器连接相同目录并开始同步。</p></div></section>
+    <section class="card" aria-labelledby="recovery-title"><div class="section-heading"><h2 id="recovery-title">恢复记录</h2><button id="export">导出当前书签备份</button></div><p class="description">删除会传播到另一端。已删除内容和同时编辑产生的冲突版本可在这里恢复；每次应用同步前也会自动在共享目录保留最近 10 份本端备份。</p><div id="recovery" class="list"></div></section>
+    <details class="card"><summary>同步规则与运行说明</summary><ul><li>首次取并集；标题、网址、位置分别合并。相同字段的同时修改按版本决定，另一版保留恢复记录。</li><li>删除与修改冲突时删除优先。相同网址在不同文件夹内会保留；有歧义的重复项不自动清理。</li><li>书签变更会自动发布；切回窗口、打开管理器标签页时补同步。原生下拉菜单和内置收藏夹面板展开不一定能被检测。</li><li>浏览器在后台或电脑休眠时可能延后检查，恢复运行后继续。首次授权和需要恢复授权时需要你操作。</li><li>自带书签同步可以继续运行，它带来的变更也会进入本地合并。厂商云同步仍按原有设置上传或下载书签；本扩展没有网络请求。</li><li>只读或企业管理的收藏夹不会修改。两端只写自己的交换文件；关闭一端不会删除其书签。</li></ul><p id="diagnostics" class="note"></p></details>
+    <p id="notice" role="alert" hidden></p>
+    <footer>BookMarkSync 1.0.1 · 纯扩展 · 无本地辅助程序 · 无同步中介</footer>
+  </main>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "BookMarkSync · 本地书签同步",
+  "version": "1.0.1",
+  "description": "通过你选择的本地文件夹，在 Chrome 和 Edge 之间自动双向同步书签，无中介服务器。",
+  "minimum_chrome_version": "122",
+  "permissions": [
+    "bookmarks",
+    "alarms",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "BookMarkSync · 设置与状态"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'; base-uri 'none'; frame-src 'none'"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmu4edDvjQmLz+VzaduI3BFcDNyxHKvaUgtLaK0hlAvq1e5Vbd1IAEwOgoZ8WGy3mRmwCrYHEfz//NI4pFk9joric3HZHnjScDqqPOzIZROBqBwGTRXj0Zw0Czau/EzFjiYIC6eSoutORIz6uYSn6nV+9m4kTy0TjqSIIJvYXJ0AxQTF+MBcB+pAYtQUiTu96iZEyorpk+bshtY1ajjHR9QcaJztkfJkdEU8QI24so5cgZD17Jy8l+dj8okf2Ds+qJvoSkp0IqkP+i2N5KhVmFYhF76Oia9J7/hafjto/0Z1dVVCb6yQ0XlPZjI6WWvceNQfq6PkE2YmvdcZQOIJZeQIDAQAB"
+}

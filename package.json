@@ -1,0 +1,16 @@
+{
+  "name": "bookmark-sync-local",
+  "version": "1.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Chrome / Edge 纯本地双向书签同步扩展",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node scripts/check.js",
+    "test:browser": "node scripts/full-browser-test.js",
+    "test:recovery": "node scripts/recovery-browser-test.js",
+    "test:folders": "node scripts/folder-browser-test.js",
+    "test:permissions": "node scripts/permissions-browser-test.js",
+    "package": "node scripts/package.js"
+  }
+}
