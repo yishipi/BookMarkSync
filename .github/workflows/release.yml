@@ -1,0 +1,109 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Check, test and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Validate version and tag
+        id: version
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const manifest = JSON.parse(readFileSync('extension/manifest.json', 'utf8'));
+          const metadata = JSON.parse(readFileSync('package.json', 'utf8'));
+          const version = manifest.version;
+          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)
+            || version.split('.').some(part => Number(part) > 65535) || version === '0.0.0') {
+            throw new Error('Release version must contain three valid numeric components, for example 1.0.2.');
+          }
+          if (metadata.version !== version) throw new Error('package.json and manifest.json versions must match.');
+          const ref = process.env.GITHUB_REF || '';
+          if (ref.startsWith('refs/tags/') && ref !== `refs/tags/v${version}`) {
+            throw new Error(`Tag must be v${version}, received ${ref}.`);
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          NODE
+      - name: Check JavaScript and extension manifest
+        run: npm run check
+      - name: Run unit tests
+        run: npm test
+      - name: Build extension and source archives
+        run: npm run package
+      - name: Save build downloads
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: BookMarkSync-${{ steps.version.outputs.version }}
+          path: |
+            dist/BookMarkSync-extension-*.zip
+            dist/BookMarkSync-source-*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download checked build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: BookMarkSync-${{ needs.build.outputs.version }}
+          path: dist
+      - name: Verify archive checksums
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS.txt
+      - name: Attach files and publish
+        shell: bash
+        run: |
+          existing_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null || true)"
+          if [ "$existing_draft" = "false" ]; then
+            echo "Release $TAG is already published. Published versions are not overwritten."
+            exit 1
+          fi
+          if [ "$existing_draft" != "true" ]; then
+            gh release create "$TAG" --verify-tag --title "BookMarkSync $TAG" --generate-notes --draft
+          fi
+          gh release upload "$TAG" \
+            "dist/BookMarkSync-extension-$VERSION.zip" \
+            "dist/BookMarkSync-source-$VERSION.zip" \
+            dist/SHA256SUMS.txt --clobber
+          gh release edit "$TAG" --draft=false
