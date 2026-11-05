@@ -63,8 +63,9 @@ const extensionFiles = await files(path.join(root, 'extension'));
 const readme = { name: 'README.md', bytes: await readFile(path.join(root, 'README.md')) };
 const validation = { name: 'VALIDATION.md', bytes: await readFile(path.join(root, 'VALIDATION.md')) };
 const review = { name: 'REVIEW.md', bytes: await readFile(path.join(root, 'REVIEW.md')) };
-const extensionHash = await zip(`BookMarkSync-extension-${manifest.version}.zip`, [...extensionFiles, readme, validation, review]);
-const sourceFiles = [...extensionFiles.map(entry => ({ ...entry, name: `extension/${entry.name}` })), readme, validation, review,
+const license = { name: 'LICENSE', bytes: await readFile(path.join(root, 'LICENSE')) };
+const extensionHash = await zip(`BookMarkSync-extension-${manifest.version}.zip`, [...extensionFiles, readme, validation, review, license]);
+const sourceFiles = [...extensionFiles.map(entry => ({ ...entry, name: `extension/${entry.name}` })), readme, validation, review, license,
   ...await files(path.join(root, 'scripts'), 'scripts/'), ...await files(path.join(root, 'tests'), 'tests/'),
   { name: 'package.json', bytes: await readFile(path.join(root, 'package.json')) },
   { name: '.gitignore', bytes: await readFile(path.join(root, '.gitignore')) },

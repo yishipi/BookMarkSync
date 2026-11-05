@@ -2,6 +2,7 @@
   "name": "bookmark-sync-local",
   "version": "1.0.1",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Chrome / Edge 纯本地双向书签同步扩展",
   "scripts": {
