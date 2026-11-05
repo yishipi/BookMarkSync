@@ -12,7 +12,7 @@ BookMarkSync 使用 **GitHub Releases** 分发可解压加载的扩展 ZIP、完
 | 推送 `v*` 版本标签 | 完成全部构建检查后，创建 Release 草稿、上传两个 ZIP 和校验文件，再正式发布 |
 | Actions 页面点击 Run workflow | 对选择的代码执行检查和打包，保存构建下载；不发布正式 Release |
 
-构建使用 Node.js 24，不需要执行 `npm install`，项目没有第三方运行时依赖。云端工作流执行 `npm run check`、`npm test`、`npm run package`；本机原生 Chrome / Edge、目录选择及授权交互测试仍需在本地执行，详见 `VALIDATION.md`。
+构建和发布任务固定使用 `ubuntu-24.04`，避免 `ubuntu-latest` 自动切换系统大版本；该发行版的托管镜像仍会获得更新。构建使用 Node.js 24，不需要执行 `npm install`，项目没有第三方运行时依赖。云端工作流执行 `npm run check`、`npm test`、`npm run package`；本机原生 Chrome / Edge、目录选择及授权交互测试仍需在本地执行，详见 `VALIDATION.md`。
 
 工作流默认只读仓库内容，只有版本标签的发布任务使用 `contents: write`。授权来自 GitHub 自动生成的 `GITHUB_TOKEN`，不需要另外创建个人访问令牌或填写仓库 Secrets。
 
