@@ -21,12 +21,12 @@ BookMarkSync 使用 **GitHub Releases** 分发可解压加载的扩展 ZIP、完
 
 以下以 `1.0.2` 为例，实际发布时使用尚未发布过的版本号：
 
-1. 将 `extension/manifest.json` 和 `package.json` 中的 `version` 同时改为 `1.0.2`，更新 README 和设置页页脚中的版本说明。
+1. 将 `extension/manifest.json` 和 `package.json` 中的 `version` 同时改为 `1.0.2`，更新设置页页脚及本次发布说明。
 2. 在本机完成相关检查和测试，提交变更并推送到 `main`。
 3. 在 Actions 中按下方“从网页手动发布”步骤运行；也可以对这个提交创建版本标签并推送：
 
 ```powershell
-git add -- extension/manifest.json extension/options.html package.json README.md
+git add -- extension/manifest.json extension/options.html package.json
 git commit -m "chore: release 1.0.2"
 git push origin main
 git tag -a v1.0.2 -m "BookMarkSync 1.0.2"

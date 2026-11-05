@@ -61,12 +61,13 @@ async function zip(name, entries) {
 
 const extensionFiles = await files(path.join(root, 'extension'));
 const readme = { name: 'README.md', bytes: await readFile(path.join(root, 'README.md')) };
+const readmeEn = { name: 'README.en.md', bytes: await readFile(path.join(root, 'README.en.md')) };
 const validation = { name: 'VALIDATION.md', bytes: await readFile(path.join(root, 'VALIDATION.md')) };
 const review = { name: 'REVIEW.md', bytes: await readFile(path.join(root, 'REVIEW.md')) };
 const license = { name: 'LICENSE', bytes: await readFile(path.join(root, 'LICENSE')) };
 const releasing = { name: 'docs/RELEASING.md', bytes: await readFile(path.join(root, 'docs/RELEASING.md')) };
-const extensionHash = await zip(`BookMarkSync-extension-${manifest.version}.zip`, [...extensionFiles, readme, validation, review, license, releasing]);
-const sourceFiles = [...extensionFiles.map(entry => ({ ...entry, name: `extension/${entry.name}` })), readme, validation, review, license, releasing,
+const extensionHash = await zip(`BookMarkSync-extension-${manifest.version}.zip`, [...extensionFiles, readme, readmeEn, validation, review, license, releasing]);
+const sourceFiles = [...extensionFiles.map(entry => ({ ...entry, name: `extension/${entry.name}` })), readme, readmeEn, validation, review, license, releasing,
   ...await files(path.join(root, 'scripts'), 'scripts/'), ...await files(path.join(root, 'tests'), 'tests/'),
   ...await files(path.join(root, '.github'), '.github/'),
   { name: 'package.json', bytes: await readFile(path.join(root, 'package.json')) },
