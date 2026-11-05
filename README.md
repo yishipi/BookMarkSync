@@ -135,7 +135,7 @@ GitHub 仓库用于托管扩展源码、测试和文档，运行扩展不需要�
 
 ## 自动打包与发布
 
-推送到 `main`、提交 PR 或在 Actions 中手动运行 **Build and Release**，会自动检查、测试并生成构建下载。推送与项目版本一致的标签（例如 `v1.0.2`）后，工作流会自动将扩展 ZIP、源码 ZIP 和 `SHA256SUMS.txt` 发布到 [GitHub Releases](https://github.com/yishipi/BookMarkSync/releases)。
+推送到 `main` 或提交 PR，会自动检查、测试并生成构建下载。在 Actions 中手动运行 **Build and Release**，默认勾选“发布到 GitHub Releases”；通过检查后会自动创建当前版本的标签并发布扩展 ZIP、源码 ZIP 和 `SHA256SUMS.txt`，取消勾选则只打包。推送与项目版本一致的标签（例如 `v1.0.2`）也会自动发布到 [GitHub Releases](https://github.com/yishipi/BookMarkSync/releases)。
 
 配置和操作步骤见 [Releases 与 Packages 说明](docs/RELEASING.md)。本项目通过 Releases 分发扩展；`package.json` 保留 `private: true`，不发布 npm 包。自动构建不替代本机浏览器授权和交互测试，GitHub 发布不会自动更新手动加载的扩展。
 

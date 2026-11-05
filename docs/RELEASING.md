@@ -10,11 +10,12 @@ BookMarkSync 使用 **GitHub Releases** 分发可解压加载的扩展 ZIP、完
 | --- | --- |
 | 推送到 `main` 或提交针对 `main` 的 PR | 校验版本、静态检查、单元测试、生成 ZIP，并保存 Actions 构建下载 |
 | 推送 `v*` 版本标签 | 完成全部构建检查后，创建 Release 草稿、上传两个 ZIP 和校验文件，再正式发布 |
-| Actions 页面点击 Run workflow | 对选择的代码执行检查和打包，保存构建下载；不发布正式 Release |
+| Actions 页面点击 Run workflow，并勾选“发布到 GitHub Releases”（默认勾选） | 检查、测试、打包，自动创建当前版本的标签并发布 Release |
+| Actions 页面点击 Run workflow，取消勾选发布选项 | 只检查、测试、打包，保存 Actions 构建下载 |
 
 构建和发布任务固定使用 `ubuntu-24.04`，避免 `ubuntu-latest` 自动切换系统大版本；该发行版的托管镜像仍会获得更新。构建使用 Node.js 24，不需要执行 `npm install`，项目没有第三方运行时依赖。云端工作流执行 `npm run check`、`npm test`、`npm run package`；本机原生 Chrome / Edge、目录选择及授权交互测试仍需在本地执行，详见 `VALIDATION.md`。
 
-工作流默认只读仓库内容，只有版本标签的发布任务使用 `contents: write`。授权来自 GitHub 自动生成的 `GITHUB_TOKEN`，不需要另外创建个人访问令牌或填写仓库 Secrets。
+构建任务只读仓库内容，版本标签或手动勾选发布后执行的发布任务使用 `contents: write`。授权来自 GitHub 自动生成的 `GITHUB_TOKEN`，不需要另外创建个人访问令牌或填写仓库 Secrets。手动发布创建的标签直接指向本次通过检查的提交；若同名标签已指向其他提交，流程会停止并要求增加版本号，不会移动已有标签。
 
 ## 发布下一个版本
 
@@ -22,7 +23,7 @@ BookMarkSync 使用 **GitHub Releases** 分发可解压加载的扩展 ZIP、完
 
 1. 将 `extension/manifest.json` 和 `package.json` 中的 `version` 同时改为 `1.0.2`，更新 README 和设置页页脚中的版本说明。
 2. 在本机完成相关检查和测试，提交变更并推送到 `main`。
-3. 对这个提交创建版本标签并推送：
+3. 在 Actions 中按下方“从网页手动发布”步骤运行；也可以对这个提交创建版本标签并推送：
 
 ```powershell
 git add -- extension/manifest.json extension/options.html package.json README.md
@@ -40,13 +41,20 @@ BookMarkSync-source-1.0.2.zip
 SHA256SUMS.txt
 ```
 
-标签必须严格等于 `v` 加上两个 JSON 文件中的版本号；不一致时工作流会停止发布。发布版本使用三段数字，例如 `1.0.2`。平时提交代码和手动运行工作流只生成构建下载，不会自动增加版本号。
+标签必须严格等于 `v` 加上两个 JSON 文件中的版本号；不一致时工作流会停止发布。发布版本使用三段数字，例如 `1.0.2`。工作流不会自动增加版本号；平时提交代码只生成构建下载，手动运行是否发布由发布选项决定。
 
 发布后的版本不自动覆盖。若上传中途失败，未完成的版本保留为草稿，可以在 Actions 对失败的运行选择 **Re-run failed jobs** 重试；流程会复用该标签的现有草稿。已正式发布的版本需要修正时，应使用新的版本号和标签。
 
-## 手动构建与下载
+## 从网页手动发布或仅打包
 
-进入仓库 **Actions → Build and Release → Run workflow**，选择 `main` 并运行。完成后，在运行详情的 **Artifacts** 中下载 `BookMarkSync-版本号`，里面包含两个 ZIP 和校验文件。构建下载保留 30 天，需要登录 GitHub；正式 Release 的公开文件可直接下载。
+1. 进入仓库 **Actions → Build and Release → Run workflow**，选择 `main`。
+2. 保持勾选 **“发布到 GitHub Releases（取消勾选则只打包）”**，再点击 **Run workflow**。
+3. 等待 **Check, test and package** 和 **Publish GitHub Release** 两个任务通过。流程读取当前项目版本，自动创建对应标签（例如 `v1.0.1`），并在上传两个 ZIP 和校验文件后正式发布。
+4. 在 [Releases](https://github.com/yishipi/BookMarkSync/releases) 下载文件，运行摘要也会显示发布链接。版本已正式发布后，要发布新的提交，需要先更新两个 JSON 文件中的版本号。
+
+只需要检查和打包时，在第 2 步取消勾选发布选项。完成后，在运行详情的 **Artifacts** 中下载 `BookMarkSync-版本号`，里面包含两个 ZIP 和校验文件。构建下载保留 30 天，需要登录 GitHub；正式 Release 的公开文件可直接下载。
+
+如果使用的是早期工作流配置，手动运行曾只打包而不发布，发布任务会显示 skipped。更新后的配置增加了上述发布选项；查看或重新运行旧任务不会自动获得新配置，请从 `main` 重新点击 **Run workflow**。
 
 GitHub 默认生成的 **Source code (zip)** 是仓库源码快照；安装扩展时，优先下载本项目生成的 `BookMarkSync-extension-版本号.zip`，解压后加载包含 `manifest.json` 的目录。
 
