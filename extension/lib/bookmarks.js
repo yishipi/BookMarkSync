@@ -90,7 +90,10 @@ export class BrowserBookmarks {
     }
     snapshot.roots.forEach(index);
     const availableRoots = new Set(snapshot.roots.map(root => root.id));
-    const unavailable = unavailableNodes(state, target, availableRoots);
+    // A known item missing from this newer snapshot was removed after capture.
+    // Defer it and its target subtree; the final capture records the deletion.
+    const missing = Object.keys(state.observed || {}).filter(id => !ROOTS.includes(id) && !native.has(id));
+    const unavailable = unavailableNodes(state, target, availableRoots, missing);
     for (const role of ROOTS) {
       if (rootMap.has(role) || !target.children[role]?.some(id => !unavailable.has(id))) continue;
       const folder = await this.api.create({ parentId: fallback.id, title: ROOT_NAMES[role] });
@@ -192,6 +195,14 @@ export class BrowserBookmarks {
       const parents = ROOTS.includes(parent) ? (rootMap.get(parent) || []).map(root => root.id) : [native.get(parent)].filter(Boolean);
       for (const parentId of parents) {
         const children = await this.api.getChildren(parentId);
+        // Compare only children that belonged to this physical parent before
+        // apply. Our creates and cross-parent moves do not constitute a sort.
+        const previous = (state.observed[parent]?.children || []).filter(id =>
+          !ROOTS.includes(parent) || state.observed[id]?.rootNativeId === parentId);
+        const known = new Set(previous);
+        const current = children.map(child => state.bindings[child.id]).filter(id => known.has(id));
+        const present = new Set(current);
+        if (JSON.stringify(current) !== JSON.stringify(previous.filter(id => present.has(id)))) continue;
         const actualIds = new Set(children.map(child => child.id));
         const desired = ids.map(id => native.get(id)).filter(id => actualIds.has(id));
         const ours = new Set(desired);
@@ -206,10 +217,11 @@ export class BrowserBookmarks {
   }
 }
 
-function unavailableNodes(state, target, availableRoots) {
+function unavailableNodes(state, target, availableRoots, missing = []) {
   const unavailable = new Set(Object.entries(state.observed || {})
     .filter(([id, node]) => !ROOTS.includes(id) && !availableRoots.has(node.rootNativeId))
     .map(([id]) => id));
+  for (const id of missing) unavailable.add(id);
   let expanded = true;
   while (expanded) {
     expanded = false;
