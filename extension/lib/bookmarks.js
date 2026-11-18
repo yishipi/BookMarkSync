@@ -10,7 +10,7 @@ export class BrowserBookmarks {
     const roots = [];
     let ignored = 0;
     function convert(node, root) {
-      if (node.unmodifiable || node.folderType === 'managed') {
+      if (isManaged(node)) {
         ignored++;
         return null;
       }
@@ -31,7 +31,7 @@ export class BrowserBookmarks {
     if (!browserRoots?.length) throw new Error('浏览器暂时没有返回书签根目录，稍后重试。');
     for (const [index, node] of browserRoots.entries()) {
       const role = rootRole(node, index);
-      if (!role || node.unmodifiable || node.folderType === 'managed') { ignored++; continue; }
+      if (!role || isManaged(node)) { ignored++; continue; }
       roots.push(convert(node, role));
     }
     return { roots: roots.filter(Boolean), ignored, tree };
@@ -71,7 +71,8 @@ export class BrowserBookmarks {
     return { creates, updates, moves, removes, reorders, total: creates + updates + moves + removes + reorders };
   }
 
-  async apply(state, target, checkpoint) {
+  // Apply merged changes and checkpoint browser operations needed for recovery.
+  async apply(state, target, { saveState, saveReorders }) {
     const snapshot = await this.read(state.bindings);
     const rootMap = new Map();
     for (const root of snapshot.roots) {
@@ -99,7 +100,7 @@ export class BrowserBookmarks {
       const folder = await this.api.create({ parentId: fallback.id, title: ROOT_NAMES[role] });
       state.bindings[folder.id] = role;
       rootMap.set(role, [{ ...folder, root: role, children: [], syncing: fallback.syncing }]);
-      await checkpoint();
+      await saveState();
     }
     function parentNative(parent, existing) {
       if (!ROOTS.includes(parent)) return native.get(parent);
@@ -132,7 +133,7 @@ export class BrowserBookmarks {
         // or deletion of a newly created item from an unfinished replay.
         state.observed[id] = { nativeId, rootNativeId, dateAdded: created.dateAdded || 0,
           kind: node.kind, title: node.title, url: node.url, parent: node.parent, children: [] };
-        await checkpoint();
+        await saveState();
       }
       const [actual] = await api.get(nativeId);
       const old = state.observed[id];
@@ -164,7 +165,7 @@ export class BrowserBookmarks {
       if (parent && parent !== old.parent) updates.parent = parent;
       if (!Object.keys(updates).length) return;
       changeFields(state, id, updates);
-      await checkpoint();
+      await saveState();
     }
     for (const id of stale.filter(id => state.records[id]?.kind?.value === 'bookmark')) {
       const [actual] = await this.api.get(native.get(id));
@@ -172,7 +173,7 @@ export class BrowserBookmarks {
       await this.api.remove(native.get(id));
       delete state.bindings[native.get(id)];
       native.delete(id);
-      await checkpoint();
+      await saveState();
     }
     let remaining = stale.filter(id => native.has(id));
     while (remaining.length) {
@@ -186,7 +187,7 @@ export class BrowserBookmarks {
         delete state.bindings[native.get(id)];
         native.delete(id);
         removed = true;
-        await checkpoint();
+        await saveState();
       }
       remaining = remaining.filter(id => native.has(id));
       if (!removed) break;
@@ -205,16 +206,49 @@ export class BrowserBookmarks {
         if (JSON.stringify(current) !== JSON.stringify(previous.filter(id => present.has(id)))) continue;
         const actualIds = new Set(children.map(child => child.id));
         const desired = ids.map(id => native.get(id)).filter(id => actualIds.has(id));
-        const ours = new Set(desired);
-        const originalSlots = children.map((child, index) => ours.has(child.id) ? index : -1).filter(index => index >= 0);
-        for (const [index, childId] of desired.entries()) {
-          const [item] = await this.api.get(childId);
-          if (item.index !== originalSlots[index]) await this.api.move(childId, { parentId, index: originalSlots[index] });
-        }
+        await reorderChildren(this.api, state, parentId, children, desired, saveReorders);
       }
     }
     return this.read(state.bindings);
   }
+}
+
+// Save the order on both sides of a move before calling the browser. After an
+// interruption, either order is a replay checkpoint for this physical folder.
+async function reorderChildren(api, state, parentId, children, desired, saveReorders) {
+  const ours = new Set(desired);
+  const slots = children.flatMap((child, index) => ours.has(child.id) ? [index] : []);
+  let order = children.map(child => child.id);
+  const visible = new Set(children.filter(child => !isManaged(child) && !ROOTS.includes(state.bindings[child.id]))
+    .map(child => child.id));
+  for (const [offset, childId] of desired.entries()) {
+    const to = slots[offset];
+    if (order[to] === childId) continue;
+    const from = order.indexOf(childId);
+    const next = order.slice();
+    next.splice(from, 1);
+    next.splice(to, 0, childId);
+    const reorders = state.pendingApply.reorders ||= {};
+    const after = next.filter(id => visible.has(id));
+    const prior = reorders[parentId];
+    reorders[parentId] = { before: order.filter(id => visible.has(id)), after };
+    await saveReorders(reorders);
+    const current = (await api.getChildren(parentId)).map(child => child.id);
+    if (JSON.stringify(current) !== JSON.stringify(order)) {
+      // The folder changed during the checkpoint; leave the new edit in place.
+      if (prior) reorders[parentId] = prior;
+      else delete reorders[parentId];
+      return;
+    }
+    // Chromium interprets the index before removing the child from this parent.
+    await api.move(childId, { parentId, index: to > from ? to + 1 : to });
+    reorders[parentId] = { after };
+    order = next;
+  }
+}
+
+function isManaged(node) {
+  return Boolean(node.unmodifiable || node.folderType === 'managed');
 }
 
 function unavailableNodes(state, target, availableRoots, missing = []) {

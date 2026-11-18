@@ -67,9 +67,12 @@ export class MemoryBookmarks {
       if (cursor.id === id) throw new Error('Cannot move folder into descendant');
     }
     const oldParent = this.find(node.parentId);
-    oldParent.children.splice(oldParent.children.indexOf(node), 1);
+    const oldIndex = oldParent.children.indexOf(node);
+    let index = target.index ?? parent.children.length;
+    if (oldParent === parent && index > oldIndex) index--;
+    oldParent.children.splice(oldIndex, 1);
     node.parentId = parent.id;
-    parent.children.splice(Math.min(target.index ?? Infinity, parent.children.length), 0, node);
+    parent.children.splice(index, 0, node);
     this.changed(); return structuredClone(node);
   }
   async remove(id) {

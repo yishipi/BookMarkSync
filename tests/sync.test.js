@@ -61,6 +61,24 @@ test('同字段并发冲突收敛，并可恢复另一版', async () => {
   assert.ok(!(await edge.engine.summary()).conflicts.some(item => item.key === conflict.key));
 });
 
+test('冲突恢复优先于点击前尚未捕获的本地修改', async () => {
+  const { chrome, edge } = await pair();
+  const original = await chrome.api.create({ parentId: '1', title: '原书签', url: 'https://restore-before-capture.example/' });
+  await start(chrome); await start(edge); await settle(chrome, edge);
+  const local = edge.api.find('1').children[0];
+  await chrome.api.update(original.id, { title: 'Chrome 修改' });
+  await edge.api.update(local.id, { title: 'Edge 修改' });
+  await settle(chrome, edge);
+  const conflict = (await edge.engine.summary()).conflicts.find(item => item.field === 'title');
+  assert.ok(conflict);
+  await edge.api.update(local.id, { title: '点击恢复前的编辑' });
+  await edge.engine.restore(conflict.id, conflict.key);
+  await settle(edge, chrome);
+  assert.equal(edge.api.find(local.id).title, conflict.loser.value);
+  assert.equal(chrome.api.find(original.id).title, conflict.loser.value);
+  assert.ok(!(await edge.engine.summary()).conflicts.some(item => item.key === conflict.key));
+});
+
 test('删除和并发修改：删除传播，恢复时保留最新内容', async () => {
   const { shared, chrome, edge } = await pair();
   const a = await chrome.api.create({ parentId: '1', title: '起点', url: 'https://example.com/' });

@@ -132,6 +132,22 @@ test('原生批量导入复用了 ID、创建时间改变时，保留两项并�
   assert.equal(b.api.find('1').children.length, 2);
 });
 
+test('在原书签前插入相同副本，对端修改仍应用到原书签', async () => {
+  const shared = new MemoryExchange();
+  const a = participant(shared), b = participant(shared, 'Edge');
+  const entry = { parentId: '1', title: '原书签', url: 'https://duplicate-binding.example/' };
+  const originalA = await a.api.create(entry);
+  await start(a); await start(b); await settle(a, b);
+  const originalB = b.api.find('1').children[0];
+  await a.api.update(originalA.id, { title: '对端改名' });
+  await a.engine.run();
+  const copy = await b.api.create({ ...entry, index: 0 });
+  await settle(b, a);
+  assert.equal(b.api.find(originalB.id).title, '对端改名');
+  assert.equal(b.api.find(copy.id).title, '原书签');
+  assert.deepEqual(treeContents(a.api), treeContents(b.api));
+});
+
 test('拒绝原型键，避免外部 JSON 改写内部对象', () => {
   const state = freshState('actor-chrome'); state.config.workspace = { id: crypto.randomUUID() };
   const document = makeDocument(state);

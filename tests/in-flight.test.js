@@ -98,3 +98,60 @@ test('远端和应用开始前的本地同时排序，保留较晚的本地顺�
   assert.deepEqual(b.api.find('1').children.map(node => node.title), ['C', 'A', 'B']);
   assert.deepEqual(treeContents(b.api), treeContents(a.api));
 });
+
+for (const scenario of ['toolbar', 'folder', 'account', 'local-edit']) {
+  test(`排序应用中断后区分已执行的移动和用户排序（${scenario}）`, async () => {
+    const shared = new MemoryExchange();
+    const a = participant(shared), b = participant(shared, 'Edge');
+    if (scenario === 'account') {
+      b.api.find('1').syncing = false;
+      b.api.tree[0].children.push({ id: '7', parentId: '0', title: '账号收藏栏', folderType: 'bookmarks-bar', syncing: true, children: [] });
+    }
+    const aParent = scenario === 'folder' ? (await a.api.create({ parentId: '1', title: '资料' })).id : '1';
+    for (const title of ['A', 'B', 'C', 'D']) {
+      await a.api.create({ parentId: aParent, title, url: `https://interrupted-order.example/${title}` });
+    }
+    await start(a); await start(b); await settle(a, b);
+    const bParent = scenario === 'folder' ? b.api.find('1').children[0].id : scenario === 'account' ? '7' : '1';
+    // Give the logical toolbar two physical roots in the account scenario.
+    if (scenario === 'account') {
+      const extra = await b.api.create({ parentId: '1', title: '本地项', url: 'https://interrupted-order.example/local' });
+      await settle(b, a);
+      assert.equal(b.api.find(extra.id).parentId, '1');
+    }
+    for (const title of ['B', 'C', 'D']) {
+      const item = a.api.find(aParent).children.find(node => node.title === title);
+      await a.api.move(item.id, { parentId: aParent, index: 0 });
+    }
+    const titles = (participant, id) => participant.api.find(id).children.map(node => node.title);
+    const sourceOrder = titles(a, aParent);
+    await a.engine.run();
+    const move = b.api.move.bind(b.api);
+    let moves = 0;
+    let persisted;
+    b.api.move = async (...args) => {
+      // Exercise both sides of the crash window: a move may already have
+      // reached the browser even if the worker did not receive its reply.
+      if (++moves === 2 && scenario !== 'folder') throw new Error('模拟排序中断');
+      const result = await move(...args);
+      if (moves === 1 && scenario === 'folder') {
+        persisted = await b.store.get('state');
+        throw new Error('模拟排序中断');
+      }
+      return result;
+    };
+    assert.equal((await b.engine.run()).status.phase, 'error');
+    b.api.move = move;
+    // Restart from the last durable state, before the error handler ran.
+    if (persisted) await b.store.set('state', persisted);
+    assert.deepEqual(titles(b, bParent), ['D', 'A', 'B', 'C']);
+    if (scenario === 'local-edit') {
+      const c = b.api.find(bParent).children.find(node => node.title === 'C');
+      await b.api.move(c.id, { parentId: bParent, index: 0 });
+    }
+    await settle(b, a);
+    const expected = scenario === 'local-edit' ? ['C', 'D', 'A', 'B'] : sourceOrder;
+    assert.deepEqual(titles(b, bParent), expected.filter(title => title !== '本地项'));
+    assert.deepEqual(titles(a, aParent), expected);
+  });
+}

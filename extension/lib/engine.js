@@ -12,6 +12,11 @@ export class SyncEngine {
   async load() {
     const saved = await this.store.get('state');
     if (saved && saved.schema !== 1) throw new Error('本地状态版本较新，请更新扩展。');
+    const pending = saved?.pendingApply;
+    if (pending?.id && !pending.reorders) {
+      const checkpoint = await this.store.get('reorderCheckpoint');
+      if (checkpoint?.id === pending.id) pending.reorders = checkpoint.reorders;
+    }
     return saved || freshState();
   }
 
@@ -56,8 +61,10 @@ export class SyncEngine {
     return enabled ? this.run({ reason: '开始同步' }) : summary(state);
   }
 
+  // Record edits already present in the browser before issuing the restore.
   async restore(id, conflictKey) {
     const state = await this.load();
+    if (state.observed) await captureLocal(state, await this.bookmarks.read(state.bindings));
     restoreRecord(state, id, conflictKey);
     await this.save(state);
     return this.run({ force: true, reason: '恢复书签' });
@@ -106,9 +113,14 @@ export class SyncEngine {
       }
       if (plan.total) {
         await exchange.backup(state.actor, before.tree);
-        state.pendingApply = { records: structuredClone(state.records) };
+        const pending = { id: crypto.randomUUID(), records: structuredClone(state.records) };
+        state.pendingApply = pending;
         await this.save(state);
-        const after = await this.bookmarks.apply(state, target, () => this.save(state));
+        const after = await this.bookmarks.apply(state, target, {
+          saveState: () => this.save(state),
+          // A reorder writes only its journal instead of the entire bookmark database.
+          saveReorders: reorders => this.store.set('reorderCheckpoint', { id: pending.id, reorders }),
+        });
         await captureLocal(state, after);
       }
       state.pendingApply = null;

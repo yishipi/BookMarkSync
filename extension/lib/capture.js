@@ -4,6 +4,7 @@ function signature(parent, kind, title, url) {
   return JSON.stringify([parent, kind, title, url]);
 }
 
+// Preserve valid browser identities and record changes outside the current replay.
 export async function captureLocal(state, snapshot, now = Date.now()) {
   const previous = state.observed;
   const pending = state.pendingApply;
@@ -23,16 +24,26 @@ export async function captureLocal(state, snapshot, now = Date.now()) {
   for (const ids of candidates.values()) ids.sort();
   const occurrences = new Map();
 
+  // A new duplicate may appear before its still-bound original in the tree.
+  // Reserve all valid native bindings before matching any item by content.
+  const reserved = new Map();
+  const remaining = [...snapshot.roots];
+  while (remaining.length) {
+    const raw = remaining.pop();
+    for (const child of raw.children) remaining.push(child);
+    if (raw.root) continue;
+    const id = state.bindings[raw.id];
+    if (!id || occupied.has(id)) continue;
+    const old = previous?.[id];
+    const recycledId = old?.nativeId === raw.id && old.dateAdded > 0 && raw.dateAdded > 0 &&
+      old.dateAdded !== raw.dateAdded && (old.title !== raw.title || old.url !== raw.url);
+    if (state.records[id]?.kind.value !== raw.kind || recycledId) continue;
+    reserved.set(raw.id, id);
+    occupied.add(id);
+  }
+
   async function visit(raw, parent, rootNativeId) {
-    let id = raw.root || state.bindings[raw.id];
-    if (id && !ROOTS.includes(id)) {
-      const old = previous?.[id];
-      const record = state.records[id];
-      const recycledId = old?.nativeId === raw.id && old.dateAdded > 0 && raw.dateAdded > 0 &&
-        old.dateAdded !== raw.dateAdded && (old.title !== raw.title || old.url !== raw.url);
-      if (record?.kind.value !== raw.kind || recycledId) id = null;
-    }
-    if (id && occupied.has(id) && !ROOTS.includes(id)) id = null;
+    let id = raw.root || reserved.get(raw.id);
     if (!id) {
       const key = signature(parent, raw.kind, raw.title, raw.url);
       const candidate = (candidates.get(key) || []).find(item => {
@@ -47,8 +58,8 @@ export async function captureLocal(state, snapshot, now = Date.now()) {
         id = await digest([key, occurrence]);
       }
       id ||= crypto.randomUUID();
+      occupied.add(id);
     }
-    if (!raw.root) occupied.add(id);
     bindings[raw.id] = id;
     const children = [];
     for (const child of raw.children) children.push(await visit(child, id, rootNativeId));
@@ -95,14 +106,15 @@ export async function captureLocal(state, snapshot, now = Date.now()) {
   }
   const expected = pending ? materialize({ records: pending.records }) : null;
   for (const [id, node] of Object.entries(local)) {
+    const old = previous?.[id];
     if (ROOTS.includes(id)) {
-      const old = previous?.[id];
       if (!state.records[id]?.children || (old && !equal(old.children, node.children) &&
-        !matchesAppliedOrder(id, node.children, expected))) changeFields(state, id, { children: node.children }, now);
+        !matchesAppliedOrder(id, local, previous, expected, pending?.reorders))) {
+        changeFields(state, id, { children: node.children }, now);
+      }
       continue;
     }
     const record = state.records[id];
-    const old = previous?.[id];
     if (!record) {
       changeFields(state, id, {
         kind: node.kind, title: node.title, url: node.url, parent: node.parent,
@@ -118,7 +130,7 @@ export async function captureLocal(state, snapshot, now = Date.now()) {
       if (!equal(old[field], node[field]) && !equal(expected?.nodes[id]?.[field], node[field])) updates[field] = node[field];
     }
     if (node.kind === 'folder' && !equal(old.children, node.children) &&
-      !matchesAppliedOrder(id, node.children, expected)) updates.children = node.children;
+      !matchesAppliedOrder(id, local, previous, expected, pending?.reorders)) updates.children = node.children;
     changeFields(state, id, updates, now);
   }
   if (previous) {
@@ -133,11 +145,31 @@ export async function captureLocal(state, snapshot, now = Date.now()) {
   return local;
 }
 
-function matchesAppliedOrder(id, children, expected) {
+// A persisted move can have run even if its browser reply never reached us.
+function matchesAppliedOrder(id, local, previous, expected, reorders) {
   if (!expected) return false;
+  const node = local[id];
   const desired = expected.children[id] || [];
-  const present = new Set(children);
-  return children.every(child => desired.includes(child)) && equal(children, desired.filter(child => present.has(child)));
+  function matchesTarget(children) {
+    const present = new Set(children);
+    return equal(children, desired.filter(child => present.has(child)));
+  }
+  function matchesCheckpoint(nativeId, children) {
+    const checkpoint = reorders?.[nativeId];
+    if (!checkpoint) return false;
+    const order = children.map(child => local[child].nativeId);
+    return equal(order, checkpoint.after) || equal(order, checkpoint.before);
+  }
+  if (matchesTarget(node.children)) return true;
+  if (!node.nativeIds) return matchesCheckpoint(node.nativeId, node.children);
+  if (!node.nativeIds.some(nativeId => reorders?.[nativeId])) return false;
+  // Local and account roots can share a role but their orders are independent.
+  const old = previous[id];
+  return [...new Set([...node.nativeIds, ...old.nativeIds])].every(nativeId => {
+    const children = node.children.filter(child => local[child]?.rootNativeId === nativeId);
+    const prior = old.children.filter(child => previous[child]?.rootNativeId === nativeId);
+    return equal(children, prior) || matchesCheckpoint(nativeId, children) || matchesTarget(children);
+  });
 }
 
 function equal(a, b) {
