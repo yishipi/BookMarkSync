@@ -35,6 +35,7 @@ function row(title, description, action) {
   return outer;
 }
 
+// Refresh the settings and the current page of recovery records.
 function render(next) {
   view = next;
   const phase = view.status.phase;
@@ -71,15 +72,27 @@ function render(next) {
     const fields = { title: '标题', url: '网址', parent: '位置', deleted: '删除状态' };
     element('recovery').append(row(`${conflict.title} · ${fields[conflict.field]}冲突`,
       `保留版本：${String(conflict.loser.value).slice(0, 220)} · ${formatTime(conflict.loser.stamp.time)}`,
-      async () => render(await command('restore', { id: conflict.id, conflictKey: conflict.key }))));
+      async () => render(await command('restore', { id: conflict.id, conflictKey: conflict.key, deletedPage: view.deletedPage }))));
   }
-  for (const item of view.deleted.slice(0, 30)) {
+  for (const item of view.deleted) {
     element('recovery').append(row(`${item.title || '未命名'} · 已删除${item.kind === 'folder' ? '文件夹' : '书签'}`,
       `${item.url || '恢复文件夹时会恢复同一次删除的子项'} · ${formatTime(item.at)}`,
-      async () => render(await command('restore', { id: item.id }))));
+      async () => render(await command('restore', { id: item.id, deletedPage: view.deletedPage }))));
   }
   if (!view.deleted.length && !view.conflicts.length) element('recovery').append(row('暂无恢复记录', '同时修改产生的冲突版本和已删除内容会显示在这里。'));
+  renderDeletedNavigation();
   element('diagnostics').textContent = `本端标识 ${view.actor} · 忽略只读项 ${view.status.ignored || 0} · 恢复记录 ${view.deletedCount} · 最近触发 ${view.status.reason || '尚无'}${view.status.repairs?.length ? ` · 已处理文件夹冲突 ${view.status.repairs.length}` : ''}`;
+}
+
+// Keep page boundaries correct after restores or a background refresh.
+function renderDeletedNavigation() {
+  if (!view) return;
+  const { deletedPage, deletedPages } = view;
+  element('deleted-pages').hidden = deletedPages < 2;
+  const pageLabel = `第 ${deletedPage + 1} / ${deletedPages} 页`;
+  if (element('deleted-page').textContent !== pageLabel) element('deleted-page').textContent = pageLabel;
+  element('deleted-previous').disabled = busy || deletedPage <= 0;
+  element('deleted-next').disabled = busy || deletedPage + 1 >= deletedPages;
 }
 
 async function runAction(action) {
@@ -98,6 +111,7 @@ async function runAction(action) {
   } finally {
     busy = false;
     document.querySelectorAll('button').forEach(button => { button.disabled = false; });
+    renderDeletedNavigation();
   }
 }
 
@@ -125,6 +139,12 @@ element('sync').onclick = () => runAction(async () => render(await command('sync
 element('save').onclick = () => runAction(async () => {
   render(await command('configure', { settings: settings() }));
 });
+element('deleted-previous').onclick = () => runAction(async () => {
+  render(await command('status', { deletedPage: view.deletedPage - 1 }));
+});
+element('deleted-next').onclick = () => runAction(async () => {
+  render(await command('status', { deletedPage: view.deletedPage + 1 }));
+});
 element('export').onclick = () => runAction(async () => {
   const backup = await command('export');
   const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }));
@@ -136,4 +156,10 @@ element('export').onclick = () => runAction(async () => {
 });
 
 void runAction(async () => render(await command('status')));
-setInterval(() => { if (!busy && !document.hidden) void command('status').then(render).catch(() => {}); }, 3000);
+setInterval(() => {
+  if (busy || document.hidden) return;
+  const deletedPage = view?.deletedPage;
+  void command('status', { deletedPage }).then(next => {
+    if (!busy && view?.deletedPage === deletedPage) render(next);
+  }).catch(() => {});
+}, 3000);

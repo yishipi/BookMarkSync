@@ -1,6 +1,8 @@
 import { captureLocal } from './capture.js';
 import { ROOTS, digest, freshState, makeDocument, materialize, mergeDocument, restoreRecord, validateDocument, values } from './model.js';
 
+const DELETED_PAGE_SIZE = 30;
+
 export class SyncEngine {
   constructor({ store, bookmarks, exchange, label }) {
     this.store = store;
@@ -62,17 +64,17 @@ export class SyncEngine {
   }
 
   // Record edits already present in the browser before issuing the restore.
-  async restore(id, conflictKey) {
+  async restore(id, conflictKey, deletedPage) {
     const state = await this.load();
     if (state.observed) await captureLocal(state, await this.bookmarks.read(state.bindings));
     restoreRecord(state, id, conflictKey);
     await this.save(state);
-    return this.run({ force: true, reason: '恢复书签' });
+    return this.run({ force: true, reason: '恢复书签', deletedPage });
   }
 
-  async run({ preview = false, force = false, reason = '自动同步' } = {}) {
+  async run({ preview = false, force = false, reason = '自动同步', deletedPage } = {}) {
     let state = await this.load();
-    if (!state.config.workspace || (!state.config.enabled && !preview && !force)) return summary(state);
+    if (!state.config.workspace || (!state.config.enabled && !preview && !force)) return summary(state, deletedPage);
     try {
       const handle = await this.store.get('directory');
       if (!handle) throw Object.assign(new Error('共享目录记录不存在，请重新选择目录。'), { code: 'permission' });
@@ -89,12 +91,13 @@ export class SyncEngine {
       const sources = await exchange.documents();
       // Validate all files before applying any of them.
       validateSources(sources, workspace.id);
-      for (const source of sources) mergeDocument(state, source.document);
-      if (!state.observed) await captureLocal(state, before);
-      // A union can exceed the limit even when each input file fits. Check it
-      // before changing the browser, so the result can always be published.
-      try { validateDocument(makeDocument(state), workspace.id); }
-      catch (error) { state = await this.load(); throw error; }
+      // Keep the last local capture if the combined versions conflict with
+      // each other or their union exceeds the limit for a published document.
+      try {
+        for (const source of sources) mergeDocument(state, source.document);
+        if (!state.observed) await captureLocal(state, before);
+        validateDocument(makeDocument(state), workspace.id);
+      } catch (error) { state = await this.load(); throw error; }
       state.status.peers = sources.filter(source => source.document.writer !== state.actor).map(source => ({
         label: source.document.label, actor: source.document.writer, modified: source.modified,
       }));
@@ -109,7 +112,7 @@ export class SyncEngine {
           ? '合并预览已更新，尚未应用。可点击“恢复自动同步”或“立即同步”。'
           : '目录已连接。首次同步将合并两端现有书签，点击“开始自动同步”应用。';
         await this.save(state);
-        return summary(state);
+        return summary(state, deletedPage);
       }
       if (plan.total) {
         await exchange.backup(state.actor, before.tree);
@@ -138,7 +141,7 @@ export class SyncEngine {
       state.status.reason = reason;
       state.status.error = null;
       await this.save(state);
-      return summary(state);
+      return summary(state, deletedPage);
     } catch (error) {
       state.status.phase = error.code === 'permission' || ['NotAllowedError', 'SecurityError'].includes(error.name) ? 'permission' : 'error';
       state.status.message = state.status.phase === 'permission'
@@ -146,11 +149,11 @@ export class SyncEngine {
         : error.message || String(error);
       state.status.error = { name: error.name, message: state.status.message, at: Date.now() };
       await this.save(state);
-      return summary(state);
+      return summary(state, deletedPage);
     }
   }
 
-  async summary() { return summary(await this.load()); }
+  async summary(deletedPage) { return summary(await this.load(), deletedPage); }
 }
 
 function validateSources(sources, workspace) {
@@ -160,16 +163,29 @@ function validateSources(sources, workspace) {
   }
 }
 
-function summary(state) {
-  const alive = Object.entries(state.records).filter(([id, record]) => !ROOTS.includes(id) && !record.deleted.value);
-  const deleted = Object.entries(state.records).filter(([id, record]) => !ROOTS.includes(id) && record.deleted.value)
-    .sort((a, b) => b[1].deleted.stamp.time - a[1].deleted.stamp.time)
-    .map(([id, record]) => ({ id, ...values(record), at: record.deleted.stamp.time }));
+// Return one page of deleted items, with folders that can restore a whole
+// deletion batch before the children they cover.
+function summary(state, requestedPage = 0) {
+  let bookmarks = 0, folders = 0;
+  const deleted = [];
+  for (const [id, record] of Object.entries(state.records)) {
+    if (ROOTS.includes(id)) continue;
+    if (record.deleted.value) {
+      const { actor, time, seq } = record.deleted.stamp;
+      const parentDeleted = state.records[record.parent.value]?.deleted;
+      const covered = parentDeleted?.value && parentDeleted.stamp.actor === actor && parentDeleted.stamp.time === time;
+      deleted.push({ id, record, time, seq, covered: Boolean(covered) });
+    } else if (record.kind.value === 'folder') folders++;
+    else bookmarks++;
+  }
+  deleted.sort((a, b) => b.time - a.time || Number(a.covered) - Number(b.covered) || b.seq - a.seq);
+  const deletedPages = Math.ceil(deleted.length / DELETED_PAGE_SIZE);
+  const deletedPage = Number.isSafeInteger(requestedPage) ? Math.max(0, Math.min(requestedPage, deletedPages - 1)) : 0;
+  const start = deletedPage * DELETED_PAGE_SIZE;
   return {
-    actor: state.actor, config: state.config, status: state.status,
-    bookmarks: alive.filter(([, record]) => record.kind.value === 'bookmark').length,
-    folders: alive.filter(([, record]) => record.kind.value === 'folder').length,
-    deleted: deleted.slice(0, 100), deletedCount: deleted.length,
+    actor: state.actor, config: state.config, status: state.status, bookmarks, folders,
+    deleted: deleted.slice(start, start + DELETED_PAGE_SIZE).map(({ id, record, time }) => ({ id, ...values(record), at: time })),
+    deletedCount: deleted.length, deletedPage, deletedPages,
     conflicts: state.conflicts.map(conflict => ({ ...conflict, title: state.records[conflict.id]?.title?.value || '未命名' })),
   };
 }

@@ -86,13 +86,13 @@ chrome.tabs.onActivated.addListener(info => {
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return false;
   const commands = {
-    status: () => engine.summary(),
+    status: () => engine.summary(message.deletedPage),
     configure: () => engine.configure(message.settings || {}),
     permissionRestored: () => engine.permissionRestored(),
     enable: () => engine.setEnabled(true),
     pause: () => engine.setEnabled(false),
     sync: () => synchronize('手动同步', true),
-    restore: () => engine.restore(message.id, message.conflictKey),
+    restore: () => engine.restore(message.id, message.conflictKey, message.deletedPage),
     export: async () => ({ schema: 1, createdAt: Date.now(), tree: await chrome.bookmarks.getTree() }),
   };
   if (!Object.hasOwn(commands, message?.type)) return false;

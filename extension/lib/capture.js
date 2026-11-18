@@ -1,4 +1,5 @@
-import { ROOTS, changeFields, digest, materialize, stableStringify, values } from './model.js';
+import { ROOTS, changeFields, digest, materialize, values } from './model.js';
+import { childrenInFolder, mergeChildOrder, sameOrder, sameRelativeOrder } from './sibling-order.js';
 
 function signature(parent, kind, title, url) {
   return JSON.stringify([parent, kind, title, url]);
@@ -13,6 +14,7 @@ export async function captureLocal(state, snapshot, now = Date.now()) {
   const local = {};
   const initial = previous === null;
   const empty = Object.keys(state.records).length === 0;
+  const initialOrder = initial && !empty ? materialize(state).children : null;
   const candidates = new Map();
   for (const [id, record] of Object.entries(state.records)) {
     if (ROOTS.includes(id)) continue;
@@ -105,13 +107,27 @@ export async function captureLocal(state, snapshot, now = Date.now()) {
     root.children.push(...visible.slice(index));
   }
   const expected = pending ? materialize({ records: pending.records }) : null;
+  function captureChildren(id, node, old) {
+    const savedOrder = state.records[id]?.children?.value;
+    if (!savedOrder) return node.children;
+    // Keep the shared order for existing entries and place new local entries
+    // using their observed neighbors (also when the shared folder was empty).
+    if (initialOrder) {
+      let order = initialOrder[id] || savedOrder;
+      for (const nativeId of node.nativeIds || [node.nativeId]) {
+        order = mergeChildOrder(order, childrenInFolder(local, id, nativeId));
+      }
+      return order;
+    }
+    if (!old) return undefined;
+    return captureFolderOrder(id, local, previous, savedOrder, expected?.children[id] || [], pending);
+  }
+
   for (const [id, node] of Object.entries(local)) {
     const old = previous?.[id];
     if (ROOTS.includes(id)) {
-      if (!state.records[id]?.children || (old && !equal(old.children, node.children) &&
-        !matchesAppliedOrder(id, local, previous, expected, pending?.reorders))) {
-        changeFields(state, id, { children: node.children }, now);
-      }
+      const children = captureChildren(id, node, old);
+      if (children) changeFields(state, id, { children }, now);
       continue;
     }
     const record = state.records[id];
@@ -122,15 +138,18 @@ export async function captureLocal(state, snapshot, now = Date.now()) {
       }, now);
       continue;
     }
-    // Newly rebound IDs after cloud sync/restart already describe an existing record.
-    // Only observed changes are edits; imported target values are acknowledgements.
-    if (!old) continue;
     const updates = {};
-    for (const field of ['title', 'url', 'parent']) {
-      if (!equal(old[field], node[field]) && !equal(expected?.nodes[id]?.[field], node[field])) updates[field] = node[field];
+    // Rebound IDs already describe existing records. Only observed changes
+    // outside the applied target are new title, URL or parent edits.
+    if (old) {
+      for (const field of ['title', 'url', 'parent']) {
+        if (old[field] !== node[field] && expected?.nodes[id]?.[field] !== node[field]) updates[field] = node[field];
+      }
     }
-    if (node.kind === 'folder' && !equal(old.children, node.children) &&
-      !matchesAppliedOrder(id, local, previous, expected, pending?.reorders)) updates.children = node.children;
+    if (node.kind === 'folder') {
+      const children = captureChildren(id, node, old);
+      if (children) updates.children = children;
+    }
     changeFields(state, id, updates, now);
   }
   if (previous) {
@@ -145,33 +164,41 @@ export async function captureLocal(state, snapshot, now = Date.now()) {
   return local;
 }
 
-// A persisted move can have run even if its browser reply never reached us.
-function matchesAppliedOrder(id, local, previous, expected, reorders) {
-  if (!expected) return false;
+// Update only the slots a changed physical folder can observe. The order in
+// which the browser happens to enumerate its local/account roots is irrelevant.
+function captureFolderOrder(id, local, previous, savedOrder, desired, pending) {
   const node = local[id];
-  const desired = expected.children[id] || [];
-  function matchesTarget(children) {
-    const present = new Set(children);
-    return equal(children, desired.filter(child => present.has(child)));
+  let order;
+  for (const nativeId of node.nativeIds || [node.nativeId]) {
+    const children = childrenInFolder(local, id, nativeId);
+    const prior = childrenInFolder(previous, id, nativeId);
+    if (sameOrder(children, prior)) continue;
+    // An ordinary folder exposes its entire local order in one list.
+    if (!pending && !node.nativeIds) return children;
+    order ??= pending ? mergeChildOrder(savedOrder, desired) : savedOrder;
+    const replayed = pending && matchesApplyOrder(children, prior, desired, local, nativeId, pending);
+    order = mergeChildOrder(order, children, !replayed);
   }
-  function matchesCheckpoint(nativeId, children) {
-    const checkpoint = reorders?.[nativeId];
-    if (!checkpoint) return false;
-    const order = children.map(child => local[child].nativeId);
-    return equal(order, checkpoint.after) || equal(order, checkpoint.before);
-  }
-  if (matchesTarget(node.children)) return true;
-  if (!node.nativeIds) return matchesCheckpoint(node.nativeId, node.children);
-  if (!node.nativeIds.some(nativeId => reorders?.[nativeId])) return false;
-  // Local and account roots can share a role but their orders are independent.
-  const old = previous[id];
-  return [...new Set([...node.nativeIds, ...old.nativeIds])].every(nativeId => {
-    const children = node.children.filter(child => local[child]?.rootNativeId === nativeId);
-    const prior = old.children.filter(child => previous[child]?.rootNativeId === nativeId);
-    return equal(children, prior) || matchesCheckpoint(nativeId, children) || matchesTarget(children);
-  });
+  if (!order || pending) return order;
+  const present = new Set(node.children);
+  const departed = new Set(previous[id].children.filter(child => !present.has(child)));
+  return order.filter(child => !departed.has(child));
 }
 
-function equal(a, b) {
-  return stableStringify(a) === stableStringify(b);
+// Recognize the target, either side of the last native move, or appends that
+// precede the first reorder. A distinguishable user sort wins over replay.
+function matchesApplyOrder(children, prior, desired, local, nativeId, pending) {
+  if (sameRelativeOrder(children, desired)) return true;
+  const checkpoint = pending.reorders?.[nativeId];
+  if (checkpoint) {
+    const nativeOrder = children.map(child => local[child].nativeId);
+    return sameRelativeOrder(nativeOrder, checkpoint.after) ||
+      (checkpoint.before && sameRelativeOrder(nativeOrder, checkpoint.before));
+  }
+  const priorIds = new Set(prior);
+  const desiredIds = new Set(desired);
+  const appended = children.filter(child => desiredIds.has(child) && !priorIds.has(child));
+  const created = pending.createdChildren?.[nativeId];
+  return sameRelativeOrder(children, prior.concat(appended)) &&
+    (!created || sameRelativeOrder(appended, created));
 }

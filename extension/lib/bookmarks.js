@@ -1,7 +1,9 @@
 import { ROOTS, changeFields } from './model.js';
+import { childrenInFolder, sameOrder, sameRelativeOrder } from './sibling-order.js';
 
 const ROOT_NAMES = { 'root:toolbar': '收藏栏', 'root:other': '其他收藏夹', 'root:mobile': '移动设备书签' };
 
+// Project the shared tree onto writable native folders and apply it in small steps.
 export class BrowserBookmarks {
   constructor(api) { this.api = api; }
 
@@ -37,6 +39,7 @@ export class BrowserBookmarks {
     return { roots: roots.filter(Boolean), ignored, tree };
   }
 
+  // Count membership changes per item and actual reorders per physical folder.
   async plan(state, target) {
     const current = state.observed || {};
     const availableRoots = new Set(ROOTS.flatMap(role => current[role]?.nativeIds || []));
@@ -53,19 +56,10 @@ export class BrowserBookmarks {
       if (!ROOTS.includes(id) && !unavailable.has(id) && !target.nodes[id]) removes++;
     }
     for (const [id, ids] of Object.entries(target.children)) {
-      const actual = current[id]?.children;
-      if (!actual || unavailable.has(id)) continue;
-      if (!ROOTS.includes(id)) {
-        if (JSON.stringify(actual) !== JSON.stringify(ids)) reorders++;
-        continue;
-      }
-      // Local/account roots cannot be interleaved physically. Compare only
-      // the order that can be applied inside each available native root.
-      const desiredIds = new Set(ids);
-      for (const nativeId of current[id].nativeIds) {
-        const group = actual.filter(child => current[child]?.rootNativeId === nativeId && desiredIds.has(child));
-        const present = new Set(group);
-        if (JSON.stringify(group) !== JSON.stringify(ids.filter(child => present.has(child)))) reorders++;
+      const folder = current[id];
+      if (folder?.kind !== 'folder' || unavailable.has(id)) continue;
+      for (const nativeId of folder.nativeIds || [folder.nativeId]) {
+        if (!sameRelativeOrder(childrenInFolder(current, id, nativeId), ids)) reorders++;
       }
     }
     return { creates, updates, moves, removes, reorders, total: creates + updates + moves + removes + reorders };
@@ -133,6 +127,9 @@ export class BrowserBookmarks {
         // or deletion of a newly created item from an unfinished replay.
         state.observed[id] = { nativeId, rootNativeId, dateAdded: created.dateAdded || 0,
           kind: node.kind, title: node.title, url: node.url, parent: node.parent, children: [] };
+        // Keep sibling creation order so recovery can detect a later user sort.
+        const arrivals = state.pendingApply.createdChildren ||= {};
+        (arrivals[parentId] ||= []).push(id);
         await saveState();
       }
       const [actual] = await api.get(nativeId);
@@ -198,12 +195,9 @@ export class BrowserBookmarks {
         const children = await this.api.getChildren(parentId);
         // Compare only children that belonged to this physical parent before
         // apply. Our creates and cross-parent moves do not constitute a sort.
-        const previous = (state.observed[parent]?.children || []).filter(id =>
-          !ROOTS.includes(parent) || state.observed[id]?.rootNativeId === parentId);
-        const known = new Set(previous);
-        const current = children.map(child => state.bindings[child.id]).filter(id => known.has(id));
-        const present = new Set(current);
-        if (JSON.stringify(current) !== JSON.stringify(previous.filter(id => present.has(id)))) continue;
+        const previous = childrenInFolder(state.observed, parent, parentId);
+        const current = children.map(child => state.bindings[child.id]);
+        if (!sameRelativeOrder(current, previous)) continue;
         const actualIds = new Set(children.map(child => child.id));
         const desired = ids.map(id => native.get(id)).filter(id => actualIds.has(id));
         await reorderChildren(this.api, state, parentId, children, desired, saveReorders);
@@ -234,7 +228,7 @@ async function reorderChildren(api, state, parentId, children, desired, saveReor
     reorders[parentId] = { before: order.filter(id => visible.has(id)), after };
     await saveReorders(reorders);
     const current = (await api.getChildren(parentId)).map(child => child.id);
-    if (JSON.stringify(current) !== JSON.stringify(order)) {
+    if (!sameOrder(current, order)) {
       // The folder changed during the checkpoint; leave the new edit in place.
       if (prior) reorders[parentId] = prior;
       else delete reorders[parentId];

@@ -23,6 +23,7 @@ If you install from source, load the repository's `extension` folder.
 - The first merge keeps bookmarks from both browsers. After that, **deletions also sync to the other browser**.
 - Check **恢复记录** (Recovery) for deleted items or conflicting edits. Before applying changes, the extension saves a backup and keeps the latest 10 per browser in the shared folder's `backups` directory.
 - To update, replace the extension files in their existing folder, then click **Reload** on the browser's extensions page.
+- If both browsers insert bookmarks between the same two items, the new bookmarks stay between them and each browser's insertion order is preserved. Update the extension in both browsers to use this behavior with your existing shared folder.
 
 ## Sync stopped after restarting the browser?
 

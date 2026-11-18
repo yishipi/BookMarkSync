@@ -58,6 +58,30 @@ test('多份本地和账号根目录无法交错排列时，静止状态不反�
   assert.equal(shared.backups.length, backups, '物理根目录之间不能交错的逻辑顺序不应反复应用');
 });
 
+test('根目录枚举顺序变化不发布编辑，单个实际目录内的拖动只调整它自己的位置', async () => {
+  const shared = new MemoryExchange();
+  const a = participant(shared), b = participant(shared, 'Edge');
+  a.api.tree[0].children.push({ id: '7', parentId: '0', title: '另一个收藏栏', folderType: 'bookmarks-bar', children: [] });
+  for (const [parentId, title] of [['1', 'A'], ['1', 'B'], ['7', 'X'], ['7', 'Y']]) {
+    await a.api.create({ parentId, title, url: 'https://root-order.example/' + title });
+  }
+  await start(a); await start(b); await settle(a, b);
+  const toolbar = b.api.find('1');
+  await b.api.move(toolbar.children.find(item => item.title === 'X').id, { parentId: '1', index: 1 });
+  await settle(b, a);
+  const titles = () => toolbar.children.map(item => item.title);
+  assert.deepEqual(titles(), ['A', 'X', 'B', 'Y']);
+  const writes = shared.writes;
+  const vector = (await a.engine.load()).vector;
+  a.api.tree[0].children.reverse();
+  await settle(a, b);
+  assert.equal(shared.writes, writes);
+  assert.deepEqual((await a.engine.load()).vector, vector);
+  await a.api.move(a.api.find('1').children[1].id, { parentId: '1', index: 0 });
+  await settle(a, b);
+  assert.deepEqual(titles(), ['B', 'X', 'A', 'Y']);
+});
+
 test('账号根目录不可用时延后其子树的新项，恢复后继续且不反复备份', async () => {
   const shared = new MemoryExchange();
   const a = participant(shared), b = participant(shared, 'Edge');

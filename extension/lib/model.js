@@ -1,3 +1,5 @@
+import { mergeChildOrder, sameOrder } from './sibling-order.js';
+
 export const SCHEMA = 1;
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 export const ROOTS = ['root:toolbar', 'root:other', 'root:mobile'];
@@ -65,6 +67,52 @@ function concurrent(a, b) {
     (b.seen[a.stamp.actor] || 0) < a.stamp.seq;
 }
 
+// Keep one independent edit per writer until a later folder edit has observed
+// it. Recomputing from these original lists makes intermediate replicas safe
+// to forward: a previously chosen tie is never mistaken for a user's drag.
+function activeOrderVersions(versions) {
+  const latest = new Map();
+  const seen = new Map();
+  for (const version of versions) {
+    const { actor, seq } = version.stamp;
+    if (!latest.has(actor) || latest.get(actor).stamp.seq < seq) latest.set(actor, version);
+    for (const [writer, through] of Object.entries(version.seen)) {
+      seen.set(writer, Math.max(seen.get(writer) || 0, through));
+    }
+  }
+  return [...latest.values()].filter(version => version.stamp.seq > (seen.get(version.stamp.actor) || 0))
+    .sort((a, b) => compareText(a.stamp.actor, b.stamp.actor));
+}
+
+function combinedOrder(versions) {
+  const winner = versions.reduce((a, b) => compareStamp(a.stamp, b.stamp) > 0 ? a : b);
+  const otherIds = new Set();
+  for (const version of versions) {
+    if (version === winner) continue;
+    for (const id of version.value) otherIds.add(id);
+  }
+  // Keep the winning drag order for known neighbors. Insert every writer's
+  // new runs, including the winner's, in stable writer order at those gaps.
+  let value = winner.value.filter(id => otherIds.has(id));
+  for (const version of versions) value = mergeChildOrder(value, version.value);
+  return { ...winner, value, versions };
+}
+
+function mergeFolderOrder(left, right) {
+  if (!left.versions && !right.versions && !concurrent(left, right)) {
+    return compareStamp(left.stamp, right.stamp) >= 0 ? left : right;
+  }
+  const active = activeOrderVersions([...(left.versions || [left]), ...(right.versions || [right])]);
+  if (!active.length) throw new Error('目录排序的因果版本互相矛盾。');
+  if (active.length === 1) return active[0];
+  for (const existing of [left, right]) {
+    if (existing.versions?.length === active.length &&
+      active.every((v, i) => compareStamp(v.stamp, existing.versions[i].stamp) === 0)) return existing;
+  }
+  return combinedOrder(active);
+}
+
+// Merge each bookmark field, retaining concurrent placement evidence for folders.
 export function mergeDocument(state, document) {
   state.resolvedConflicts = [...new Set([...(state.resolvedConflicts || []), ...(document.resolvedConflicts || [])])].sort();
   for (const conflict of document.conflicts || []) {
@@ -79,6 +127,9 @@ export function mergeDocument(state, document) {
       const previous = current[field];
       if (!previous) {
         current[field] = structuredClone(candidate);
+      } else if (field === 'children' && (ROOTS.includes(id) || incoming.kind?.value === 'folder')) {
+        const order = mergeFolderOrder(previous, candidate);
+        if (order !== previous) current[field] = structuredClone(order);
       } else if (compareStamp(previous.stamp, candidate.stamp) !== 0) {
         const winner = compareStamp(previous.stamp, candidate.stamp) > 0 ? previous : candidate;
         const loser = winner === previous ? candidate : previous;
@@ -126,27 +177,19 @@ export function validateDocument(document, workspace, nested = false) {
     const isRoot = ROOTS.includes(id);
     if (!isRoot && FIELDS.some(field => !Object.hasOwn(record, field))) throw new Error('交换文件书签字段不完整。');
     for (const [field, register] of Object.entries(record)) {
-      if (!FIELDS.includes(field) || !plainObject(register) || !plainObject(register.stamp) || !plainObject(register.seen)) {
-        throw new Error('交换文件字段格式无效。');
-      }
-      const stamp = register.stamp;
-      if (!Number.isSafeInteger(stamp.time) || stamp.time < 0 || stamp.time > Date.now() + 86400000 ||
-        !Number.isSafeInteger(stamp.tick) || stamp.tick < 0 || !Number.isSafeInteger(stamp.seq) || stamp.seq < 1 ||
-        !Object.hasOwn(document.vector, stamp.actor) || document.vector[stamp.actor] < stamp.seq) {
-        throw new Error('交换文件包含无效时间或版本。');
-      }
-      for (const [actor, seq] of Object.entries(register.seen)) {
-        if (!Object.hasOwn(document.vector, actor) || !Number.isSafeInteger(seq) || seq < 0 || seq > document.vector[actor]) {
-          throw new Error('交换文件因果版本无效。');
-        }
-      }
+      if (!FIELDS.includes(field)) throw new Error('交换文件字段格式无效。');
+      validateVersion(register, document.vector);
       const value = register.value;
       if ((field === 'kind' && !['bookmark', 'folder'].includes(value)) ||
         (field === 'title' && (typeof value !== 'string' || value.length > 100000)) ||
         (field === 'url' && value !== null && (typeof value !== 'string' || value.length > 200000)) ||
         (field === 'parent' && !validId(value)) || (field === 'deleted' && typeof value !== 'boolean') ||
-        (field === 'children' && (!Array.isArray(value) || value.some(child => !validId(child)) || new Set(value).size !== value.length))) {
+        (field === 'children' && !validOrder(value))) {
         throw new Error('交换文件书签内容无效。');
+      }
+      if (register.versions !== undefined) {
+        if (field !== 'children' || (!isRoot && record.kind?.value !== 'folder')) throw new Error('只有目录可以携带排序版本。');
+        validateOrderVersions(register, document.vector);
       }
       if (isRoot && field !== 'children') throw new Error('不能修改浏览器特殊根文件夹。');
     }
@@ -180,6 +223,47 @@ export function validateDocument(document, workspace, nested = false) {
 
 function plainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function validateVersion(register, vector) {
+  if (!plainObject(register) || !plainObject(register.stamp) || !plainObject(register.seen)) {
+    throw new Error('交换文件字段格式无效。');
+  }
+  const { time, tick, seq, actor } = register.stamp;
+  if (!Number.isSafeInteger(time) || time < 0 || time > Date.now() + 86400000 ||
+    !Number.isSafeInteger(tick) || tick < 0 || !Number.isSafeInteger(seq) || seq < 1 ||
+    !validId(actor) || !Object.hasOwn(vector, actor) || vector[actor] < seq || (register.seen[actor] || 0) >= seq) {
+    throw new Error('交换文件包含无效时间或版本。');
+  }
+  for (const [writer, through] of Object.entries(register.seen)) {
+    if (!Object.hasOwn(vector, writer) || !Number.isSafeInteger(through) || through < 0 || through > vector[writer]) {
+      throw new Error('交换文件因果版本无效。');
+    }
+  }
+}
+
+function validOrder(ids) {
+  return Array.isArray(ids) && ids.every(validId) && new Set(ids).size === ids.length;
+}
+
+// Schema-1 readers consume value directly. New readers also verify that this
+// projection agrees with the original concurrent edits used for future merges.
+function validateOrderVersions(register, vector) {
+  const versions = register.versions;
+  if (!Array.isArray(versions) || versions.length < 2 || versions.length > Object.keys(vector).length) {
+    throw new Error('目录排序版本数量无效。');
+  }
+  for (const version of versions) {
+    validateVersion(version, vector);
+    if (version.versions !== undefined || !validOrder(version.value)) throw new Error('目录排序版本内容无效。');
+  }
+  const active = activeOrderVersions(versions);
+  if (active.length !== versions.length || !active.every((version, i) => version === versions[i])) {
+    throw new Error('目录排序版本重复、已过期或次序无效。');
+  }
+  const result = combinedOrder(active);
+  if (compareStamp(result.stamp, register.stamp) !== 0 || stableStringify(result.seen) !== stableStringify(register.seen) ||
+    !sameOrder(result.value, register.value)) throw new Error('目录排序结果与记录的版本不符。');
 }
 
 export function materialize(state) {

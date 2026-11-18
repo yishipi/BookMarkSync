@@ -99,7 +99,7 @@ test('远端和应用开始前的本地同时排序，保留较晚的本地顺�
   assert.deepEqual(treeContents(b.api), treeContents(a.api));
 });
 
-for (const scenario of ['toolbar', 'folder', 'account', 'local-edit']) {
+for (const scenario of ['toolbar', 'folder', 'account', 'local-edit', 'local-insert', 'local-delete', 'local-move']) {
   test(`排序应用中断后区分已执行的移动和用户排序（${scenario}）`, async () => {
     const shared = new MemoryExchange();
     const a = participant(shared), b = participant(shared, 'Edge');
@@ -145,13 +145,80 @@ for (const scenario of ['toolbar', 'folder', 'account', 'local-edit']) {
     // Restart from the last durable state, before the error handler ran.
     if (persisted) await b.store.set('state', persisted);
     assert.deepEqual(titles(b, bParent), ['D', 'A', 'B', 'C']);
+    let expected = sourceOrder;
     if (scenario === 'local-edit') {
       const c = b.api.find(bParent).children.find(node => node.title === 'C');
       await b.api.move(c.id, { parentId: bParent, index: 0 });
+      expected = ['C', 'D', 'A', 'B'];
+    }
+    if (scenario === 'local-insert') {
+      await b.api.create({ parentId: bParent, index: 2, title: '新书签', url: 'https://interrupted-order.example/new' });
+      expected = ['D', 'C', '新书签', 'B', 'A'];
+    }
+    if (scenario === 'local-delete') {
+      await b.api.remove(b.api.find(bParent).children.find(node => node.title === 'A').id);
+      expected = ['D', 'C', 'B'];
+    }
+    if (scenario === 'local-move') {
+      await b.api.move(b.api.find(bParent).children.find(node => node.title === 'A').id, { parentId: '2' });
+      expected = ['D', 'C', 'B'];
     }
     await settle(b, a);
-    const expected = scenario === 'local-edit' ? ['C', 'D', 'A', 'B'] : sourceOrder;
     assert.deepEqual(titles(b, bParent), expected.filter(title => title !== '本地项'));
     assert.deepEqual(titles(a, aParent), expected);
+    if (scenario === 'local-move') {
+      assert.deepEqual(titles(a, '2'), ['A']);
+      assert.deepEqual(titles(b, '2'), ['A']);
+    }
+    const writes = shared.writes;
+    const backups = shared.backups.length;
+    await settle(b, a);
+    assert.equal(shared.writes, writes);
+    assert.equal(shared.backups.length, backups);
   });
 }
+
+test('创建后重排前中断，恢复时把远端新书签移到指定位置', async () => {
+  const shared = new MemoryExchange();
+  const a = participant(shared), b = participant(shared, 'Edge');
+  const folder = await a.api.create({ parentId: '1', title: '资料' });
+  await a.api.create({ parentId: folder.id, title: '原书签', url: 'https://create-order.example/original' });
+  await start(a); await start(b); await settle(a, b);
+  const bFolder = b.api.find('1').children[0].id;
+  await a.api.create({ parentId: folder.id, index: 0, title: '远端新书签', url: 'https://create-order.example/new' });
+  await a.engine.run();
+  const get = b.api.get.bind(b.api);
+  b.api.get = async id => {
+    if (b.api.find(id).title === '远端新书签') throw new Error('模拟新建检查点后的中断');
+    return get(id);
+  };
+  assert.equal((await b.engine.run()).status.phase, 'error');
+  b.api.get = get;
+  await settle(b, a);
+  const expected = ['远端新书签', '原书签'];
+  assert.deepEqual(b.api.find(bFolder).children.map(item => item.title), expected);
+  assert.deepEqual(a.api.find(folder.id).children.map(item => item.title), expected);
+});
+
+test('中断后手动交换两个远端新书签，保留用户的排序', async () => {
+  const shared = new MemoryExchange();
+  const a = participant(shared), b = participant(shared, 'Edge');
+  await a.api.create({ parentId: '1', title: '旧书签', url: 'https://new-item-order.example/old' });
+  await start(a); await start(b); await settle(a, b);
+  for (const title of ['新书签一', '新书签二']) {
+    await a.api.create({ parentId: '1', title, url: `https://new-item-order.example/${title}` });
+  }
+  await a.engine.run();
+  const get = b.api.get.bind(b.api);
+  b.api.get = async id => {
+    if (b.api.find('1').children.length === 3) throw new Error('模拟两次新建后的中断');
+    return get(id);
+  };
+  assert.equal((await b.engine.run()).status.phase, 'error');
+  b.api.get = get;
+  await b.api.move(b.api.find('1').children[2].id, { parentId: '1', index: 1 });
+  const expected = treeContents(b.api);
+  await settle(b, a);
+  assert.deepEqual(treeContents(b.api), expected);
+  assert.deepEqual(treeContents(a.api), expected);
+});

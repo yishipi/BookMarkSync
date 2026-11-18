@@ -31,6 +31,42 @@ test('首次并集：相同项配对，保留两端独有项及重复数量', as
   assert.equal(stableStringify((await chrome.engine.load()).vector), vector, '同步事件不能产生新编辑');
 });
 
+test('首次接入保留收藏栏及同名文件夹中已有书签的顺序', async () => {
+  const { chrome, edge } = await pair();
+  await chrome.api.create({ parentId: '2', title: '资料' });
+  const folder = await edge.api.create({ parentId: '2', title: '资料' });
+  for (const parentId of ['1', folder.id]) {
+    for (const title of ['C', 'A', 'F', 'D', 'B', 'E']) {
+      await edge.api.create({ parentId, title, url: `https://initial-order.example/${title}` });
+    }
+  }
+  await start(chrome);
+  const before = treeContents(edge.api);
+  const preview = await edge.engine.configure();
+  assert.equal(preview.status.plan.reorders, 0);
+  await edge.engine.setEnabled(true);
+  await settle(chrome, edge);
+  assert.deepEqual(treeContents(edge.api), before);
+  assert.deepEqual(treeContents(chrome.api), before);
+});
+
+test('首次接入有两份收藏栏时，新增书签只以同一实际目录中的条目为邻居', async () => {
+  const { chrome, edge } = await pair();
+  edge.api.tree[0].children.push({ id: '7', parentId: '0', title: '账号收藏栏', folderType: 'bookmarks-bar', children: [] });
+  const add = (side, parentId, title) => side.api.create({ parentId, title, url: 'https://join-order.example/' + title });
+  for (const title of ['A', 'X', 'B', 'Y']) await add(chrome, '1', title);
+  for (const title of ['A', 'B', 'N']) await add(edge, '1', title);
+  for (const title of ['X', 'Y']) await add(edge, '7', title);
+  await start(chrome);
+  const before = treeContents(edge.api);
+  assert.equal((await edge.engine.configure()).status.plan.reorders, 0);
+  await edge.engine.setEnabled(true); await settle(edge, chrome);
+  assert.deepEqual(treeContents(edge.api), before);
+  const titles = chrome.api.find('1').children.map(node => node.title);
+  assert.deepEqual(titles.filter(title => title !== 'N'), ['A', 'X', 'B', 'Y']);
+  assert.ok(titles.indexOf('N') > titles.indexOf('B'));
+});
+
 test('两端不同字段编辑：标题和位置一起保留', async () => {
   const { chrome, edge } = await pair();
   const a = await chrome.api.create({ parentId: '1', title: '旧标题', url: 'https://example.com/' });
@@ -110,6 +146,27 @@ test('删除整个文件夹可恢复同次删除的子树', async () => {
   assert.equal(edge.api.find('1').children[0].children[0].children[0].title, '书签');
 });
 
+test('大文件夹的父项优先显示，超过一百条的删除记录仍可分页访问', async () => {
+  const { chrome } = await pair();
+  const folder = await chrome.api.create({ parentId: '1', title: '目录' });
+  const nested = await chrome.api.create({ parentId: folder.id, title: '子目录' });
+  for (let index = 0; index < 101; index++) {
+    await chrome.api.create({ parentId: nested.id, title: `书签 ${index}`, url: `https://large-recovery.example/${index}` });
+  }
+  await start(chrome);
+  await chrome.api.removeTree(folder.id);
+  const first = await chrome.engine.run();
+  assert.equal(first.deleted[0].title, '目录');
+  assert.equal(first.deletedCount, 103);
+  const pages = [first];
+  for (let page = 1; page < first.deletedPages; page++) pages.push(await chrome.engine.summary(page));
+  assert.equal(new Set(pages.flatMap(page => page.deleted.map(item => item.id))).size, 103);
+  assert.equal(pages.at(-1).deletedPage, first.deletedPages - 1);
+  const restored = await chrome.engine.restore(first.deleted[0].id);
+  assert.equal(restored.deletedCount, 0);
+  assert.equal(chrome.api.find('1').children[0].children[0].children.length, 101);
+});
+
 test('删除文件夹与对端新增子项冲突：新子项移至其他收藏夹', async () => {
   const { chrome, edge } = await pair();
   const folder = await chrome.api.create({ parentId: '1', title: '资料' });
@@ -130,6 +187,30 @@ test('移动和排序传播，网址的查询参数及片段保持原样', async
   await settle(chrome, edge);
   assert.deepEqual(treeContents(chrome.api), treeContents(edge.api));
   assert.equal(chrome.api.find('1').children[0].url, 'https://example.com/?q=3#tab');
+});
+
+test('普通文件夹的预览单独统计成员变动和已有书签换序', async () => {
+  const { chrome, edge } = await pair();
+  const folder = await chrome.api.create({ parentId: '1', title: '资料' });
+  const items = [];
+  for (const title of ['A', 'B', 'C', 'D']) {
+    items.push(await chrome.api.create({ parentId: folder.id, title, url: 'https://plan.example/' + title }));
+  }
+  await start(chrome); await start(edge); await settle(chrome, edge);
+  await chrome.api.create({ parentId: folder.id, index: 1, title: 'X', url: 'https://plan.example/X' });
+  await chrome.api.move(items[2].id, { parentId: '2' });
+  await chrome.api.remove(items[3].id);
+  await chrome.engine.run();
+  const before = treeContents(edge.api);
+  const preview = () => edge.engine.run({ preview: true });
+  assert.deepEqual((await preview()).status.plan, { creates: 1, moves: 1, removes: 1, updates: 0, reorders: 0, total: 3 });
+  await chrome.api.move(items[1].id, { parentId: folder.id, index: 0 });
+  await chrome.engine.run();
+  assert.equal((await preview()).status.plan.reorders, 1);
+  assert.deepEqual(treeContents(edge.api), before);
+  await settle(edge, chrome);
+  assert.deepEqual(treeContents(edge.api), treeContents(chrome.api));
+  assert.equal((await preview()).status.plan.total, 0);
 });
 
 test('云同步用相同内容替换原生 ID：重绑定，不重复导入', async () => {
