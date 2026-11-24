@@ -231,6 +231,59 @@ test('读取内容时撤销权限，仍保留授权错误供界面恢复', async
   await assert.rejects(exchange.read('replica-anything.json'), value => value === error);
 });
 
+test('Edge 中止新旧句柄比较后仍可选回原工作区并恢复同步', async () => {
+  const shared = new MemoryExchange(), a = participant(shared), b = participant(shared, 'Edge');
+  await start(a); await start(b);
+  await a.api.create({ parentId: '1', title: '恢复后接收', url: 'https://edge-reconnect.example/' });
+  await a.engine.run();
+  const { actor } = await b.engine.load();
+  const key = `selection:${crypto.randomUUID()}`;
+  const storedGet = b.store.get.bind(b.store);
+  let compared = false;
+  b.store.get = async name => name === key
+    ? Object.defineProperty({ name: 'fresh' }, 'isSameEntry', { value: async () => {
+      compared = true;
+      throw new DOMException('The user aborted a request.', 'AbortError');
+    } })
+    : storedGet(name);
+  const preview = await b.engine.configure({ directoryKey: key });
+  assert.equal(compared, true);
+  assert.equal(preview.actor, actor);
+  assert.equal(preview.status.phase, 'preview');
+  assert.equal(preview.config.enabled, false);
+  assert.equal((await b.store.get('directory')).name, 'fresh');
+  assert.equal(b.api.find('1').children.length, 0);
+  assert.equal((await b.engine.setEnabled(true)).status.phase, 'ready');
+  assert.deepEqual(treeContents(b.api), treeContents(a.api));
+});
+
+test('旧目录权限查询无响应时退出本轮，迟到的授权不会继续执行旧任务', async t => {
+  const shared = new MemoryExchange(), a = participant(shared);
+  await start(a);
+  const before = treeContents(a.api);
+  const writes = shared.writes, backups = shared.backups.length;
+  let entered, reply;
+  const checking = new Promise(resolve => { entered = resolve; });
+  const exchange = new DirectoryExchange({ queryPermission() {
+    entered();
+    return new Promise(resolve => { reply = resolve; });
+  } });
+  a.engine.exchangeFactory = () => exchange;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const run = a.engine.run();
+  await checking;
+  t.mock.timers.tick(10000);
+  const result = await run;
+  assert.equal(result.status.phase, 'error');
+  assert.match(result.status.message, /检查目录权限.*重新选择原共享目录/);
+  reply('granted');
+  a.engine.exchangeFactory = () => shared;
+  assert.equal((await a.engine.run()).status.phase, 'ready');
+  assert.deepEqual(treeContents(a.api), before);
+  assert.equal(shared.writes, writes);
+  assert.equal(shared.backups.length, backups);
+});
+
 test('同步时工作区标识丢失，不会自动写入一个新工作区', async () => {
   let writes = 0;
   const exchange = new DirectoryExchange({ getFileHandle: async (_name, options) => {

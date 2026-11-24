@@ -37,11 +37,24 @@ export const database = {
   }),
 };
 
+// Only abandon reads and permission checks. A late write must never race a retry.
+export async function waitForDirectory(operation, action, milliseconds = 10000) {
+  let timer;
+  try {
+    return await Promise.race([operation, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(
+        new Error(`浏览器在${action}时一直没有响应。请重新选择原共享目录后重试。`),
+        { code: 'directory-timeout' },
+      )), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 export class DirectoryExchange {
   constructor(handle) { this.handle = handle; }
 
   async checkPermission() {
-    const granted = await this.handle.queryPermission({ mode: 'readwrite' });
+    const granted = await waitForDirectory(this.handle.queryPermission({ mode: 'readwrite' }), '检查目录权限');
     if (granted !== 'granted') {
       const error = new Error('需要恢复共享目录的读写授权，请打开扩展设置点击“恢复授权”。');
       error.code = 'permission';
@@ -62,23 +75,25 @@ export class DirectoryExchange {
 
   async read(name, optional = false) {
     let fileHandle;
-    try { fileHandle = await this.handle.getFileHandle(name); }
+    try { fileHandle = await waitForDirectory(this.handle.getFileHandle(name), '打开共享文件'); }
     catch (error) {
       if (optional && error.name === 'NotFoundError') return null;
       throw error;
     }
-    const file = await fileHandle.getFile();
-    if (file.size > MAX_FILE_BYTES) throw new Error(`交换文件超过 20 MiB：${name}`);
-    const content = await file.text();
-    try { return JSON.parse(content); }
-    catch { throw new Error(`文件无法完整读取：${name}。已保留本地书签，将在下次重试。`); }
+    const file = await waitForDirectory(fileHandle.getFile(), '读取文件信息');
+    return readJsonFile(file, name);
   }
 
   async documents() {
     const documents = [];
-    for await (const [name, handle] of this.handle.entries()) {
+    const entries = this.handle.entries();
+    for (;;) {
+      const next = await waitForDirectory(entries.next(), '列出共享目录');
+      if (next.done) break;
+      const [name, handle] = next.value;
       if (handle.kind !== 'file' || !/^replica-[a-zA-Z0-9_-]{8,100}\.json$/.test(name)) continue;
-      documents.push({ name, document: await this.read(name), modified: (await handle.getFile()).lastModified });
+      const file = await waitForDirectory(handle.getFile(), '读取副本信息');
+      documents.push({ name, document: await readJsonFile(file, name), modified: file.lastModified });
     }
     return documents;
   }
@@ -108,6 +123,13 @@ export class DirectoryExchange {
     }
     for (const old of ours.sort().slice(0, -10)) await directory.removeEntry(old);
   }
+}
+
+async function readJsonFile(file, name) {
+  if (file.size > MAX_FILE_BYTES) throw new Error(`交换文件超过 20 MiB：${name}`);
+  const content = await waitForDirectory(file.text(), '读取共享文件');
+  try { return JSON.parse(content); }
+  catch { throw new Error(`文件无法完整读取：${name}。已保留本地书签，将在下次重试。`); }
 }
 
 function validateWorkspace(value) {

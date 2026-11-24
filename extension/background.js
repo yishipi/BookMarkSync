@@ -96,11 +96,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     export: async () => ({ schema: 1, createdAt: Date.now(), tree: await chrome.bookmarks.getTree() }),
   };
   if (!Object.hasOwn(commands, message?.type)) return false;
-  void enqueue(async () => {
+  // Status reads committed local state and must stay available during directory I/O.
+  const response = message.type === 'status' ? commands.status() : enqueue(async () => {
     const result = await commands[message.type]();
     if (message.type !== 'export') { await ensureAlarm(); await showStatus(result); }
     return result;
-  }).then(result => respond({ ok: true, result }), error => respond({ ok: false, error: error.message }));
+  });
+  void response.then(result => respond({ ok: true, result }), error => respond({ ok: false, error: error.message }));
   return true;
 });
 

@@ -1,4 +1,5 @@
 import { captureLocal } from './capture.js';
+import { waitForDirectory } from './storage.js';
 import { ROOTS, digest, freshState, makeDocument, materialize, mergeDocument, restoreRecord, validateDocument, values } from './model.js';
 
 const DELETED_PAGE_SIZE = 30;
@@ -35,9 +36,19 @@ export class SyncEngine {
     const workspace = await exchange.workspace({ create: true });
     validateSources(await exchange.documents(), workspace.id);
     let state = await this.load();
-    const oldHandle = await this.store.get('directory');
-    const sameDirectory = !directoryKey || (oldHandle && handle.isSameEntry && await handle.isSameEntry(oldHandle));
-    const keepEnabled = Boolean(sameDirectory && state.config.workspace?.id === workspace.id && state.config.enabled);
+    let keepEnabled = state.config.workspace?.id === workspace.id && state.config.enabled;
+    if (keepEnabled && directoryKey) {
+      const oldHandle = await this.store.get('directory');
+      keepEnabled = false;
+      if (oldHandle && handle.isSameEntry) {
+        try { keepEnabled = await waitForDirectory(handle.isSameEntry(oldHandle), '核对原共享目录'); }
+        catch (error) {
+          // Edge can abort comparison against a stale handle. Keep the newly
+          // validated selection in preview until the user resumes sync.
+          if (error.name !== 'AbortError' && error.code !== 'directory-timeout') throw error;
+        }
+      }
+    }
     if (state.config.workspace && state.config.workspace.id !== workspace.id) state = freshState();
     state.config = {
       ...state.config, enabled: keepEnabled, workspace, label: (label || this.label).slice(0, 80),
